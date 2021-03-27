@@ -1,9 +1,8 @@
 #!/bin/bash
-set -eux
 
 # Script to migrate an OCP OVN-K node to a new interface
-# script takes the new interface/NIC to migrate to as the an argument
-# ./migrateOVN.sh eth2
+# script takes the old and new interface/NIC to migrate to as arguments
+# ./migrateOVN.sh ens3 ens8
 
 copy_nm_conn_files() {
   src_path="/etc/NetworkManager/system-connections-merged"
@@ -22,22 +21,34 @@ copy_nm_conn_files() {
 }
 
 if [ -z "$1" ]; then
+    echo "This script requires an argument for the interface name to migrate from"
+    exit 1
+fi
+
+if [ -z "$2" ]; then
     echo "This script requires an argument for the interface name to migrate to"
     exit 1
 fi
 
-iface=$1
+set -eux
 
-if ! nmcli device show ${iface}; then
-  echo "NIC: ${iface} not detected on this node"
-  exit 1
-fi
+old_iface=$1
+iface=$2
 
-# configure-ovs.sh may bring down the device, so ensure it is up before we proceed
-if ! nmcli device connect ${iface}; then
-  echo "Unable to ensure device ${iface} is up Network Manager"
-  exit 1
-fi
+for port in ${old_iface} ${iface}; do
+  if ! nmcli device show ${port}; then
+    echo "NIC: ${port} not detected on this node"
+    exit 1
+  fi
+done
+
+# configure-ovs.sh may bring down the devices, so ensure they are up before we proceed
+for port in ${old_iface} ${iface}; do
+  if ! nmcli device connect ${port}; then
+    echo "Unable to ensure device ${port} is up Network Manager"
+    exit 1
+  fi
+done
 
 new_conn=$(nmcli --get-values GENERAL.CONNECTION device show ${iface})
 
@@ -46,19 +57,13 @@ if [ -z "$new_conn" ]; then
 network manager connection"
   exit 1
 elif [ "$new_conn" = "ovs-if-phys0" ]; then
-  echo "Interface: ${new_iface} is already part of ovs-if-phys0 connection. Nothing to do..."
+  echo "Interface: ${iface} is already part of ovs-if-phys0 connection. Nothing to do..."
   exit 0
 fi
 
 if ! nmcli --fields GENERAL.STATE conn show br-ex; then
   echo "No current Network Manager connection for br-ex found. Please run ovs-configuration.sh first!"
   exit 1
-fi
-
-if [ -d "/etc/NetworkManager/system-connections-merged" ]; then
-  NM_CONN_PATH="/etc/NetworkManager/system-connections-merged"
-else
-  NM_CONN_PATH="/etc/NetworkManager/system-connections"
 fi
 
 # Need to get IP info from the new connection so we can rebuild the OVS connections
@@ -83,12 +88,6 @@ fi
 
 # store old conn for later
 old_conn=$(nmcli --fields UUID,DEVICE conn show --active | awk "/\s${iface}\s*\$/ {print \$1}")
-
-# store old interface for later
-old_iface=$(nmcli --get-values connection.interface-name conn show ovs-port-phys0)
-if [ -z "$old_iface" ];then
-  echo "Unable to detect current interface used on ovs-port-phys0"
-fi
 
 # new args to update in br-ex
 extra_brex_args="802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.cloned-mac-address ${iface_mac}"
@@ -121,7 +120,7 @@ fi
 
 extra_phys_args="802-3-ethernet.mtu ${iface_mtu} conn.interface ${iface} "
 # check if this interface is a vlan, bond, or ethernet type
-if [ $(nmcli --get-values connection.type conn show ${old_conn}) == "vlan" ]; then
+if [ "$(nmcli --get-values connection.type conn show ${old_conn})" == "vlan" ]; then
   iface_type=vlan
   vlan_id=$(nmcli --get-values vlan.id conn show ${old_conn})
   if [ -z "$vlan_id" ]; then
@@ -134,7 +133,7 @@ if [ $(nmcli --get-values connection.type conn show ${old_conn}) == "vlan" ]; th
     exit 1
   fi
   extra_phys_args="dev ${vlan_parent} id ${vlan_id}"
-elif [ $(nmcli --get-values connection.type conn show ${old_conn}) == "bond" ]; then
+elif [ "$(nmcli --get-values connection.type conn show ${old_conn})" == "bond" ]; then
   iface_type=bond
   # check bond options
   bond_opts=$(nmcli --get-values bond.options conn show ${old_conn})
@@ -181,5 +180,4 @@ nmcli device connect ${old_iface}
 # need to copy the overlay files back to the system conns
 copy_nm_conn_files
 
-echo "OVS Migration has completed updating Network Manager connections...rebooting"
-reboot
+echo "OVS Migration has completed updating Network Manager connections!"
