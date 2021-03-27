@@ -10,12 +10,12 @@ copy_nm_conn_files() {
   dst_path="/etc/NetworkManager/system-connections"
   if [ -d $src_path ]; then
     echo "$src_path exists"
-    fileList=$(echo {br-ex,ovs-if-br-ex,ovs-port-br-ex,ovs-if-phys0,ovs-port-phys0}.nmconnection)
+    fileList=$(echo {br-ex,ovs-if-br-ex,ovs-if-phys0,ovs-port-phys0}.nmconnection)
     for file in ${fileList[*]}; do
       if [ -f $src_path/$file ]; then
         cp -f $src_path/$file $dst_path/$file
       else
-        echo "Skipping $file since it exists in $dst_path"
+        echo "Skipping $file since it does not exist in $src_path"
       fi
     done
   fi
