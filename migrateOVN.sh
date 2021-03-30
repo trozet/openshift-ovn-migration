@@ -48,6 +48,10 @@ for port in ${old_iface} ${iface}; do
     echo "Unable to ensure device ${port} is up Network Manager"
     exit 1
   fi
+  # we may need to sleep here if we are bringing up sub-interfaces for a parent
+  # this is because it may take some time for the parent to fully activate to allow the
+  # child to activate
+  sleep 10
 done
 
 new_conn=$(nmcli --get-values GENERAL.CONNECTION device show ${iface})
@@ -166,12 +170,12 @@ fi
 
 # NM CONNECTION UPDATE: ovs-if-br-ex
 # For now we assume there is no static IP assignment. May support this later.
+# We want no default route on br-ex, the default route will be provided by primary interface on the host
 nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.cloned-mac-address ${iface_mac} \
-  ipv4.route-metric 500 ipv6.route-metric 500
+  ipv4.never-default yes ipv6.never-default yes
 
-# bring down br-ex, disconnect new interface, bring back up br-ex, bring up old iface
+# bring down br-ex, bring back up br-ex, bring up old iface
 nmcli conn down br-ex
-nmcli device disconnect ${iface}
 nmcli conn up ovs-if-phys0
 nmcli conn up ovs-if-br-ex
 nmcli device connect ${old_iface}
