@@ -4,6 +4,8 @@
 # script takes the old and new interface/NIC to migrate to as arguments
 # ./migrateOVN.sh ens3 ens8
 
+detected_conn=""
+
 copy_nm_conn_files() {
   src_path="/etc/NetworkManager/system-connections-merged"
   dst_path="/etc/NetworkManager/system-connections"
@@ -18,6 +20,20 @@ copy_nm_conn_files() {
       fi
     done
   fi
+}
+
+find_nm_conn_for_device() {
+  local new_device
+  conns=$(nmcli --fields UUID conn show | sed 1d)
+  while IFS= read -r conn; do
+    new_device=$(nmcli --get-values connection.interface-name conn show ${conn})
+    if [ "$new_device" = "$1" ]; then
+      echo "Detected connection ${conn} for device ${1}"
+      detected_conn=$(echo ${conn} | tr -d '[:space:]')
+      return
+    fi
+  done <<< "$conns"
+  return 1
 }
 
 if [ -z "$1" ]; then
@@ -38,29 +54,32 @@ iface=$2
 for port in ${old_iface} ${iface}; do
   if ! nmcli device show ${port}; then
     echo "NIC: ${port} not detected on this node"
-    exit 1
+    # device is not present need to search and bring them up
+    if find_nm_conn_for_device ${port}; then
+      echo "Bringing up connection ${detected_conn}"
+      if ! nmcli conn up "${detected_conn}"; then
+        echo "Failed to bring up connection ${detected_conn}...there must be an active connection for migration \
+        for device ${port}"
+        exit 1
+      fi
+    else
+      echo "unable to find corresponding connection for device ${port}"
+      exit 1
+    fi
+  else
+    if ! nmcli device connect ${port}; then
+      echo "Unable to ensure device ${port} is up Network Manager"
+      exit 1
+    fi
   fi
-done
-
-# configure-ovs.sh may bring down the devices, so ensure they are up before we proceed
-for port in ${old_iface} ${iface}; do
-  if ! nmcli device connect ${port}; then
-    echo "Unable to ensure device ${port} is up Network Manager"
-    exit 1
-  fi
-  # we may need to sleep here if we are bringing up sub-interfaces for a parent
-  # this is because it may take some time for the parent to fully activate to allow the
-  # child to activate
-  sleep 10
 done
 
 new_conn=$(nmcli --get-values GENERAL.CONNECTION device show ${iface})
 
 if [ -z "$new_conn" ]; then
-  echo "No NM connection found for device. In order to migrate ensure the interface is part of an existing \
-network manager connection"
+  echo "No active NM connection found for device..."
   exit 1
-elif [ "$new_conn" = "ovs-if-phys0" ]; then
+elif [[ "$new_conn" == "ovs-if-phys0" || "$new_conn" == "ovs-port-phys0" ]]; then
   echo "Interface: ${iface} is already part of ovs-if-phys0 connection. Nothing to do..."
   exit 0
 fi
@@ -178,7 +197,7 @@ nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.clone
 nmcli conn down br-ex
 nmcli conn up ovs-if-phys0
 nmcli conn up ovs-if-br-ex
-nmcli device connect ${old_iface}
+systemctl restart NetworkManager
 
 # If we are on 4.7 or later there is the NM overlay so nmcli mods will only exist in merged files, so
 # need to copy the overlay files back to the system conns
