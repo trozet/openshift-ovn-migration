@@ -57,9 +57,20 @@ for port in ${old_iface} ${iface}; do
     # device is not present need to search and bring them up
     if find_nm_conn_for_device ${port}; then
       echo "Bringing up connection ${detected_conn}"
-      if ! nmcli conn up "${detected_conn}"; then
-        echo "Failed to bring up connection ${detected_conn}...there must be an active connection for migration \
-        for device ${port}"
+      retries=5
+      i=1
+      while [ $i -le $retries ]; do
+        if nmcli conn up "${detected_conn}"; then
+          echo "Connection ${detected_conn} up successfully"
+          break
+        fi
+        echo "Failed to bring up connection ${detected_conn}. Attempt: $i of ${retries}"
+        sleep 5
+        i=$((i+1))
+      done
+      if [ $i -gt $retries ]; then
+        echo "Failed to bring up connection ${detected_conn} after ${retries} retries...there must be an active \
+          connection for migration for device ${port}"
         exit 1
       fi
     else
