@@ -83,6 +83,8 @@ for port in ${old_iface} ${iface}; do
       exit 1
     fi
   fi
+  # sleep to allow any slaves to come up before next port iteration
+  sleep 10
 done
 
 new_conn=$(nmcli --get-values GENERAL.CONNECTION device show ${iface})
@@ -207,8 +209,24 @@ nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.clone
 # bring down br-ex, bring back up br-ex, bring up old iface
 nmcli conn down br-ex
 nmcli conn up ovs-if-phys0
+
+# before reconnecting we need to update the flow in OVS so that DHCP request can get out
+ofport=$(ovs-vsctl --columns ofport  --bare find interface name=${iface})
+if [ -z "$ofport" ]; then
+  echo "Unable to identify OpenFlow port number for interface: ${iface}"
+  exit 1
+fi
+ovs-ofctl add-flow br-ex "table=0,priority=101,in_port=LOCAL,actions=output:${ofport}"
 nmcli conn up ovs-if-br-ex
 systemctl restart NetworkManager
+
+# stop ovnkube-node so it will come back up and program new flows
+container=$(crictl ps --name ovnkube-node  |tail -n 1 | awk '{print $1}')
+if [ -z "$container" ]; then
+  echo "WARNING: Unable to find ovnkube node container to stop"
+elif ! crictl stop "${container}"; then
+  echo "WARNING: Unable to stop ovnkube container: ${container}, may have already been deleted or needs manual intervention"
+fi
 
 # If we are on 4.7 or later there is the NM overlay so nmcli mods will only exist in merged files, so
 # need to copy the overlay files back to the system conns
