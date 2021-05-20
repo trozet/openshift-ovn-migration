@@ -51,40 +51,53 @@ set -eux
 old_iface=$1
 iface=$2
 
+trap 'revert 2' ERR
+trap 'revert $?' EXIT
+
+revert() {
+  if [ "$1" -gt 0 ]; then
+    if ovs-vsctl list port ${iface}; then
+      ovs-vsctl del-port br-ex ${iface}
+    fi
+    exit 1
+  fi
+}
+
 for port in ${old_iface} ${iface}; do
   if ! nmcli device show ${port}; then
-    echo "NIC: ${port} not detected on this node"
-    # device is not present need to search and bring them up
-    if find_nm_conn_for_device ${port}; then
-      echo "Bringing up connection ${detected_conn}"
-      retries=5
-      i=1
-      while [ $i -le $retries ]; do
-        if nmcli conn up "${detected_conn}"; then
-          echo "Connection ${detected_conn} up successfully"
-          break
-        fi
-        echo "Failed to bring up connection ${detected_conn}. Attempt: $i of ${retries}"
-        sleep 5
-        i=$((i+1))
-      done
-      if [ $i -gt $retries ]; then
-        echo "Failed to bring up connection ${detected_conn} after ${retries} retries...there must be an active \
-          connection for migration for device ${port}"
-        exit 1
+    if nmcli device disconnect ${port}; then
+      echo "Sucessfully disconnected ${port}"
+    fi
+  fi
+
+  echo "NIC: ${port} being brought up on this node"
+  # device is not present need to search and bring them up
+  if find_nm_conn_for_device ${port}; then
+    echo "Bringing up connection ${detected_conn}"
+    retries=5
+    i=1
+    while [ $i -le $retries ]; do
+      if nmcli conn up "${detected_conn}"; then
+        echo "Connection ${detected_conn} up successfully"
+        break
       fi
-    else
-      echo "unable to find corresponding connection for device ${port}"
+      echo "Failed to bring up connection ${detected_conn}. Attempt: $i of ${retries}"
+      sleep 5
+      i=$((i+1))
+    done
+    if [ $i -gt $retries ]; then
+      echo "Failed to bring up connection ${detected_conn} after ${retries} retries...there must be an active \
+        connection for migration for device ${port}"
       exit 1
     fi
   else
-    if ! nmcli device connect ${port}; then
-      echo "Unable to ensure device ${port} is up Network Manager"
-      exit 1
-    fi
+    echo "unable to find corresponding connection for device ${port}"
+    exit 1
   fi
+
   # sleep to allow any slaves to come up before next port iteration
   sleep 10
+
 done
 
 new_conn=$(nmcli --get-values GENERAL.CONNECTION device show ${iface})
@@ -216,6 +229,7 @@ if [ -z "$ofport" ]; then
   echo "Unable to identify OpenFlow port number for interface: ${iface}"
   exit 1
 fi
+sleep 5
 ovs-ofctl add-flow br-ex "table=0,priority=101,in_port=LOCAL,actions=output:${ofport}"
 nmcli conn up ovs-if-br-ex
 systemctl restart NetworkManager
