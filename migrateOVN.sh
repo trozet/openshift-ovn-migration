@@ -224,12 +224,12 @@ nmcli conn down br-ex
 nmcli conn up ovs-if-phys0
 
 # before reconnecting we need to update the flow in OVS so that DHCP request can get out
+sleep 5
 ofport=$(ovs-vsctl --columns ofport  --bare find interface name=${iface})
 if [ -z "$ofport" ]; then
   echo "Unable to identify OpenFlow port number for interface: ${iface}"
   exit 1
 fi
-sleep 5
 ovs-ofctl add-flow br-ex "table=0,priority=101,in_port=LOCAL,actions=output:${ofport}"
 nmcli conn up ovs-if-br-ex
 systemctl restart NetworkManager
