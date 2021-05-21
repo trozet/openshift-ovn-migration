@@ -64,11 +64,6 @@ revert() {
 }
 
 for port in ${old_iface} ${iface}; do
-  if ! nmcli device show ${port}; then
-    if nmcli device disconnect ${port}; then
-      echo "Sucessfully disconnected ${port}"
-    fi
-  fi
 
   echo "NIC: ${port} being brought up on this node"
   # device is not present need to search and bring them up
