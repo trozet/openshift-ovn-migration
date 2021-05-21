@@ -77,6 +77,9 @@ for port in ${old_iface} ${iface}; do
     retries=5
     i=1
     while [ $i -le $retries ]; do
+      if nmcli conn down "${detected_conn}"; then
+        echo "Brought down connection ${detected_conn}"
+      fi
       if nmcli conn up "${detected_conn}"; then
         echo "Connection ${detected_conn} up successfully"
         break
