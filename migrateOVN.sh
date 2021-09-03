@@ -6,6 +6,18 @@
 
 detected_conn=""
 
+wait_conn() {
+  local conn="$1"
+  n=0
+  until [ "$n" -ge 5 ]
+  do
+    nmcli c show --active | grep "$conn" && s=0 && break || s=$?
+    n=$((n+1))
+    sleep 1
+  done
+  return $s
+}
+
 copy_nm_conn_files() {
   src_path="/etc/NetworkManager/system-connections-merged"
   dst_path="/etc/NetworkManager/system-connections"
@@ -56,6 +68,8 @@ trap 'revert $?' EXIT
 
 revert() {
   if [ "$1" -gt 0 ]; then
+    nmcli c show
+    ovs-ofctl show br-ex
     if ovs-vsctl list port ${iface}; then
       ovs-vsctl del-port br-ex ${iface}
     fi
@@ -217,23 +231,34 @@ fi
 nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.cloned-mac-address ${iface_mac} \
   ipv4.never-default yes ipv6.never-default yes
 
-# bring down br-ex, bring back up br-ex, bring up old iface
-nmcli conn down br-ex
-nmcli conn up ovs-if-phys0
-
-# before reconnecting we need to update the flow in OVS so that DHCP request can get out
+# restart NM to auto-activate connections as modified
+systemctl restart NetworkManager
+# give NM breathing time to settle
 sleep 5
+
+# make sure ovs-if-phys0 is active for ${iface} is added to br-ex
+if ! wait_conn ovs-if-phys0; then
+  echo "Timeout waiting for ovs-if-phys0 to activate"
+  exit 1
+fi
+# before reconnecting we need to update the flow in OVS so that DHCP request can get out
 ofport=$(ovs-vsctl --columns ofport  --bare find interface name=${iface})
 if [ -z "$ofport" ]; then
   echo "Unable to identify OpenFlow port number for interface: ${iface}"
   exit 1
 fi
 ovs-ofctl add-flow br-ex "table=0,priority=101,in_port=LOCAL,actions=output:${ofport}"
-nmcli conn up ovs-if-br-ex
-systemctl restart NetworkManager
+
+# wait for NM to activate all needed connections for 60 seconds
+# this is equivalent to NetworkManager-wait-online.service
+if ! nm-online -s -t 60; then
+  echo "Timeout out waiting for connections to be activated"
+  exit 1
+fi
+nmcli c show
 
 # stop ovnkube-node so it will come back up and program new flows
-container=$(crictl ps --name ovnkube-node  |tail -n 1 | awk '{print $1}')
+container=$(crictl ps --name ovnkube-node | grep -v "^CONTAINER" | tail -n 1 | awk '{print $1}')
 if [ -z "$container" ]; then
   echo "WARNING: Unable to find ovnkube node container to stop"
 elif ! crictl stop "${container}"; then
