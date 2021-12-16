@@ -231,12 +231,20 @@ fi
 nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.cloned-mac-address ${iface_mac} \
   ipv4.never-default yes ipv6.never-default yes
 
-# restart NM to auto-activate connections as modified
+# recycle the modified connection profiles
+nmcli c down ovs-port-br-ex ovs-port-phys0 br-ex
+# give NM time to remove all links
+sleep 5
+nmcli c up br-ex
+nmcli c up ovs-if-phys0
+nmcli c up ovs-if-br-ex
+
+# restart NM to auto-activate any remaining connections
 systemctl restart NetworkManager
 # give NM breathing time to settle
 sleep 5
 
-# make sure ovs-if-phys0 is active for ${iface} is added to br-ex
+# make sure ovs-if-phys0 is active for ${iface} to be added to br-ex
 if ! wait_conn ovs-if-phys0; then
   echo "Timeout waiting for ovs-if-phys0 to activate"
   exit 1
