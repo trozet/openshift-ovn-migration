@@ -6,18 +6,6 @@
 
 detected_conn=""
 
-wait_conn() {
-  local conn="$1"
-  n=0
-  until [ "$n" -ge 5 ]
-  do
-    nmcli c show --active | grep "$conn" && s=0 && break || s=$?
-    n=$((n+1))
-    sleep 1
-  done
-  return $s
-}
-
 copy_nm_conn_files() {
   src_path="/etc/NetworkManager/system-connections-merged"
   dst_path="/etc/NetworkManager/system-connections"
@@ -46,6 +34,40 @@ find_nm_conn_for_device() {
     fi
   done <<< "$conns"
   return 1
+}
+
+# Activates a NM connection profile
+activate_nm_conn() {
+  local conn=$1
+  local active_state
+  active_state=$(nmcli -g GENERAL.STATE conn show $conn)
+  if [ "$active_state" != "activated" ]; then
+    for i in {1..10}; do
+      echo "Attempt $i to bring up connection $conn"
+      nmcli conn up "$conn" && s=0 && break || s=$?
+      sleep 5
+    done
+    if [ $s -eq 0 ]; then
+      echo "Brought up connection $conn successfully"
+    else
+      echo "ERROR: Cannot bring up connection $conn after $i attempts"
+      return $s
+    fi
+  else
+    echo "Connection $conn already activated"
+  fi
+}
+
+get_interface_ofport() {
+  local iface=$1
+  local ofport
+  for i in {1..10}; do
+    ofport=$(ovs-vsctl --columns ofport --bare find interface name="${iface}")
+    s=$?
+    [ $s -eq 0 ] && [ -n "$ofport" ] && break
+    sleep 5
+  done
+  echo "$ofport"
 }
 
 if [ -z "$1" ]; then
@@ -83,25 +105,7 @@ for port in ${old_iface} ${iface}; do
   # device is not present need to search and bring them up
   if find_nm_conn_for_device ${port}; then
     echo "Bringing up connection ${detected_conn}"
-    retries=5
-    i=1
-    while [ $i -le $retries ]; do
-      if nmcli conn down "${detected_conn}"; then
-        echo "Brought down connection ${detected_conn}"
-      fi
-      if nmcli conn up "${detected_conn}"; then
-        echo "Connection ${detected_conn} up successfully"
-        break
-      fi
-      echo "Failed to bring up connection ${detected_conn}. Attempt: $i of ${retries}"
-      sleep 5
-      i=$((i+1))
-    done
-    if [ $i -gt $retries ]; then
-      echo "Failed to bring up connection ${detected_conn} after ${retries} retries...there must be an active \
-        connection for migration for device ${port}"
-      exit 1
-    fi
+    activate_nm_conn "${detected_conn}"
   else
     echo "unable to find corresponding connection for device ${port}"
     exit 1
@@ -233,37 +237,21 @@ nmcli conn mod ovs-if-br-ex 802-3-ethernet.mtu ${iface_mtu} 802-3-ethernet.clone
 
 # recycle the modified connection profiles
 nmcli c down ovs-port-br-ex ovs-port-phys0 br-ex
-# give NM time to remove all links
-sleep 5
-nmcli c up br-ex
-nmcli c up ovs-if-phys0
-nmcli c up ovs-if-br-ex
 
-# restart NM to auto-activate any remaining connections
-systemctl restart NetworkManager
-# give NM breathing time to settle
+# make sure everything is activated
+activate_nm_conn ovs-if-phys0
+activate_nm_conn ovs-if-br-ex
+
+# precautionary sleep to let things settle for a bit
 sleep 5
 
-# make sure ovs-if-phys0 is active for ${iface} to be added to br-ex
-if ! wait_conn ovs-if-phys0; then
-  echo "Timeout waiting for ovs-if-phys0 to activate"
-  exit 1
-fi
 # before reconnecting we need to update the flow in OVS so that DHCP request can get out
-ofport=$(ovs-vsctl --columns ofport  --bare find interface name=${iface})
+ofport=$(get_interface_ofport "${iface}")
 if [ -z "$ofport" ]; then
   echo "Unable to identify OpenFlow port number for interface: ${iface}"
   exit 1
 fi
 ovs-ofctl add-flow br-ex "table=0,priority=101,in_port=LOCAL,actions=output:${ofport}"
-
-# wait for NM to activate all needed connections for 60 seconds
-# this is equivalent to NetworkManager-wait-online.service
-if ! nm-online -s -t 60; then
-  echo "Timeout out waiting for connections to be activated"
-  exit 1
-fi
-nmcli c show
 
 # stop ovnkube-node so it will come back up and program new flows
 container=$(crictl ps --name ovnkube-node | grep -v "^CONTAINER" | tail -n 1 | awk '{print $1}')
